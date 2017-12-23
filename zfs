@@ -1,0 +1,151 @@
+#!/usr/local/bin/bash
+
+# Revision History:
+# 1. Mike Rowell <Mike.Rowell@Rightmove.co.uk>, original
+# 2. Uwe Kirbach <U.Kirbach@EnBW.com>
+# 3. T.J. Yang: add in some comments.
+# 4. Vernon Everett <everett.vernon@gmail.com : Added check for old snapshots
+#                                             : Added graphing data
+
+CONFIG="${HOBBITCLIENTHOME}/etc/zpool.conf"
+
+# read config file
+source $CONFIG
+
+DISKYELL=98
+DISKRED=99
+SNAPRED=90  # Days old
+SNAPYELL=60 # Days old
+SNAPCOL=true  # Set to true if snapshot age should effect test colour
+CHECKSNAPS=false # Set to true to do snapshot checking
+TEST="zpool"
+DISPCOLOR="green"
+FIRST_LINE="zpool - okay"
+FIRST_LINE_HEALTH="okay"
+FIRST_LINE_CAP="okay"
+DATA=""
+STRING=""
+
+touch /tmp/zpool
+if [ ! -w /tmp/zpool ]
+then
+   DISPCOLOR="red"
+   out=". trouble with tmp file ."
+   DATA=''
+   FIRST_LINE="zpool - ko"
+   $BB $BBDISP "status $MACHINE.$TEST $DISPCOLOR `date` $FIRST_LINE $out"
+   $BB $BBDISP "data $MACHINE.$TEST $DISPCOLOR $(echo; echo "$DATA" ;echo;echo)"
+   exit 1
+fi
+
+touch /tmp/zpool-dispcolor
+if [ ! -w /tmp/zpool-dispcolor ]
+then
+   DISPCOLOR="red"
+   out=". trouble with tmp file ."
+   DATA=''
+   FIRST_LINE="zpool - ko"
+   $BB $BBDISP "status $MACHINE.$TEST $DISPCOLOR `date` $FIRST_LINE $out"
+   $BB $BBDISP "data $MACHINE.$TEST $DISPCOLOR $(echo; echo "$DATA" ;echo;echo)"
+   exit 1
+fi   
+
+      
+if [ -e /tmp/zpool-dispcolor ]
+then
+    rm /tmp/zpool-dispcolor
+fi
+
+
+#What: beautify the page display by html code.
+HEADER="<table border=1 cellpadding=10>\
+          <tr>\
+            <th></th>\
+            <th>Zpool Name</th>\
+            <th>Status</th>\
+            <th>Capacity</th>\
+            <th>Details</th>\
+          </tr>"
+echo $HEADER > /tmp/zpool
+
+for pool in $POOLS
+do
+    z=$(/sbin/zpool list -H -o name,capacity,health $pool)
+    st=$(/sbin/zpool status $pool | awk '{printf "%s<br>",$0} END {print ""}')
+    if [ -z "$z" ] || [ -z "$st" ]
+    then
+	LINE_COLOR="red"
+	DISPCOLOR="red"
+	echo "${STRING}<tr><td>&${LINE_COLOR}</td><td>"$pool"</td><td>missing</td><td></td><td></td></tr>" >> /tmp/zpool
+	echo 'DISPCOLOR="'$DISPCOLOR'"' > /tmp/zpool-dispcolor
+    else
+	echo $z | { while read name cap health 
+	    do
+		# si une variable importante existe on l'importe
+		if [ -e /tmp/zpool-dispcolor ]; then source /tmp/zpool-dispcolor; fi
+
+		LINE_COLOR="green"
+
+		if [ "${health}" == "ONLINE" ]; then
+		    HEALTH_COLOR="green"
+		elif [ "${health}" == "DEGRADED" ]; then
+		    HEALTH_COLOR="yellow"
+		elif [ "${health}" == "FAULTED" ] || [ "${health}" == "UNAVAIL" ]; then
+		    HEALTH_COLOR="red"
+		fi
+		
+		CAP_COLOR="green"
+		cap=`echo ${cap} | cut -d% -f1`
+		if [ "${cap}" -ge $DISKYELL ]; then
+		    CAP_COLOR="yellow"
+		elif [ "${cap}" -gt $DISKRED ]; then
+		    CAP_COLOR="red"
+		fi
+		DATA=$(echo "$name : $cap\n$DATA")
+		
+		# Determine the line colours
+		[ "$HEALTH_COLOR" == "yellow" -o "$CAP_COLOR" == "yellow" ] && LINE_COLOR="yellow"
+		[ "$HEALTH_COLOR" == "red" -o "$CAP_COLOR" == "red" ] && LINE_COLOR="red"
+		
+		# Determine the messages
+		[ "$HEALTH_COLOR" == "yellow" -a "$FIRST_LINE_HEALTH" != "faulted" ] && FIRST_LINE_HEALTH="degraded"
+		[ "$HEALTH_COLOR" == "red" ] && FIRST_LINE_HEALTH="faulted"
+		[ "$CAP_COLOR" == "yellow" -a "$FIRST_LINE_CAP" != "full" ] && FIRST_LINE_CAP="nearly full"
+		[ "$CAP_COLOR" = "yellow" ] && FIRST_LINE_CAP="full"
+		
+		#Determine the final colour status
+		[ "$LINE_COLOR" == "yellow" -a "$DISPCOLOR" != "red" ] && DISPCOLOR="yellow"
+		[ "$LINE_COLOR" == "red" ] && DISPCOLOR="red"
+
+		STRING=`echo "${STRING}<tr>\
+                           <td>&${LINE_COLOR}</td>\
+                           <td>${name}</td>\
+                           <td>${health}</td>\
+                           <td>${cap} %</td>\
+                           <td style='font-size: 10px;'>${st}</td>\
+                        </tr>"`
+
+		# ici on export les variables 'importantes' hors de la boucle
+		echo $STRING >> /tmp/zpool
+		echo 'DISPCOLOR="'$DISPCOLOR'"' > /tmp/zpool-dispcolor
+	    done }
+    fi
+done
+
+# reimportation variable 'importantes'
+if [ -e /tmp/zpool-dispcolor ]; then source /tmp/zpool-dispcolor; fi
+
+DATA=$(echo "$DATA \n\n")
+
+STRING="</table><br><br>"
+STRING=`echo $STRING``/sbin/zpool status -xv`
+
+FIRST_LINE="zpool - health: $FIRST_LINE_HEALTH - capacity: $FIRST_LINE_CAP"
+
+echo $STRING >> /tmp/zpool
+
+out=`cat /tmp/zpool`
+
+# What: Sent out the final bb message to hobbit server.
+$BB $BBDISP "status $MACHINE.$TEST $DISPCOLOR `date` $FIRST_LINE $out"
+$BB $BBDISP "data $MACHINE.$TEST $DISPCOLOR $(echo; echo "$DATA" ;echo;echo)"
